@@ -1,0 +1,20 @@
+---
+
+- name: Create jenkins configuration
+  file: path=/etc/sysconfig/jenkins state=touch
+
+- name: Configure Jenkins Port for RedHat
+  lineinfile: dest=/etc/sysconfig/jenkins regexp=^JENKINS_PORT= line=JENKINS_PORT={{jenkins_port}}
+  register: config_changed
+
+- name: Restart jenkins now
+  service: name=jenkins state=restarted
+  when: config_changed.changed
+
+- name: Configure Jenkins Prefix for RedHat
+  when: prefix is defined
+  lineinfile: dest=/etc/sysconfig/jenkins regexp=^PREFIX= line=PREFIX={{prefix}}
+
+- name: Configure Jenkins E-mail
+  when: email is defined
+  template: src=hudson.tasks.Mailer.xml.j2 dest={{ jenkins_lib }}/hudson.tasks.Mailer.xml owner=jenkins group=jenkins mode=0644

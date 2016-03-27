@@ -1,0 +1,36 @@
+---
+
+# Provision virtual machine example
+#
+ - hosts: localhost
+   connection: local
+   gather_facts: false
+
+   tasks:
+
+     - name: check my ip
+       uri:
+         url: http://checkip.amazonaws.com/
+         method: GET
+         return_content: yes
+       register: myip
+
+     - name: output ip for debug
+       debug: msg="{{ myip.content }}"
+      
+     - name: create or update security group
+       ec2_group:
+         name: tj3-security-group
+         description: security group for tj3
+         region: us-east-1
+         rules:
+           - proto: tcp
+             from_port: 22
+             to_port: 22
+             cidr_ip: "{{ myip.content|trim() }}/32"
+         rules_egress:
+           - proto: all
+             from_port: all
+             to_port: all
+             cidr_ip: 0.0.0.0/0
+ 

@@ -1,0 +1,25 @@
+---
+
+# Provision virtual machine example
+#
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    jsondata: "{{ lookup('file', 'example-api-users.log') }}"
+    bo_username: rbloy
+
+  tasks:
+
+    - set_fact: 
+        json_output: "{{ jsondata | from_json }}"
+
+    - name: Setzen der User-ID 
+      set_fact:
+        bo_userid: "{{ item.id }}"
+      with_items: "{{ json_output }}"
+      when: item.username == "{{ bo_username }}"
+    
+    - debug: msg="ID ist {{ bo_userid }}"

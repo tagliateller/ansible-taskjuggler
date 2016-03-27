@@ -1,0 +1,217 @@
+---
+
+# Provision virtual machine example
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    ec2_region: us-east-1
+
+  tasks:
+
+     - name: check my ip
+       uri:
+         url: http://checkip.amazonaws.com/
+         method: GET
+         return_content: yes
+       register: myip
+
+     - name: output ip for debug
+       debug: msg="{{ myip.content }}"
+      
+     - name: create or update security group
+       ec2_group:
+         name: tj3-security-group
+         description: security group for tj3
+         region: "{{ ec2_region }}"
+         rules:
+           - proto: tcp
+             from_port: 22
+             to_port: 22
+             cidr_ip: "{{ myip.content|trim() }}/32"
+         rules_egress:
+           - proto: all
+             from_port: all
+             to_port: all
+             cidr_ip: 0.0.0.0/0
+
+     - name: "erzeuge ec2 instanz"
+       ec2:
+         region: "{{ ec2_region }}"
+         key_name: my-key-pair
+         instance_type: t2.micro
+         image: ami-60b6c60a # Amazon Linux AMI 2015.09.1 (HVM), SSD Volume Type, us-east-1
+         # image: ami-bff32ccc # Amazon Linux AMI 2015.09.1 (HVM), SSD Volume Type, eu-west-1
+         wait: yes
+         group: tj3-security-group
+       register: ec2
+
+     - name: tag instances
+       ec2_tag:
+         region: "{{ ec2_region }}"
+         resource: "{{ item.id }}"
+         state: present
+         tags:
+           Name: tj3-master
+       with_items: ec2.instances 
+
+     - name: "add host to group"
+       add_host: >
+         name=tj3-master
+         ansible_ssh_host={{ item.dns_name }}
+         ansible_ssh_port=22
+         ansible_ssh_user=ec2-user
+         ansible_ssh_private_key_file=/home/robert/workspace/cloud/aws-amazon/my-key-pair-eu-west-1
+         groups=masters
+       with_items: ec2.instances
+
+     - name: Wait for ssh
+       wait_for: "port=22 host={{ item.dns_name }}"
+       with_items: ec2.instances
+
+- hosts: tj3-master
+  remote_user: ec2-user
+  sudo: true
+  vars:
+    jenkins_dest: /opt/jenkins
+    jenkins_lib: /var/lib/jenkins
+    jenkins_port: 8080
+    jenkins:
+      deb:
+        repo: 'deb http://pkg.jenkins-ci.org/debian binary/' # Jenkins repository
+        dependencies: # Jenkins dependencies
+          - 'openjdk-7-jre'
+          - 'openjdk-7-jdk'
+          - 'git'
+          - 'curl'
+      redhat:
+        dependencies:
+          - 'java'
+          - 'git'
+          - 'curl'
+      cli_dest: '{{ jenkins_dest }}/jenkins-cli.jar' # Jenkins CLI destination
+      updates_dest: '{{ jenkins_dest }}/updates_jenkins.json' # Jenkins updates file
+    proxy: false # keine Proxy für Jenkins 
+    gitlab_repository_installation_script_url: "https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.rpm.sh"
+
+  tasks:
+
+    - name: update all packages
+      yum: name=* state=latest
+
+    - name: Install python-pycurl
+      yum: name=python-pycurl state=installed
+
+    - name: Import jenkins key
+      rpm_key:
+        key: https://jenkins-ci.org/redhat/jenkins-ci.org.key
+        state: present
+        validate_certs: no
+
+    - name: Get jenkins repo for ansible
+      get_url:
+        url: http://pkg.jenkins-ci.org/redhat/jenkins.repo
+        dest: /etc/yum.repos.d/jenkins.repo
+        
+    - name: Install RedHat dependencies
+      yum: name={{ item }} state=installed
+      with_items: jenkins.redhat.dependencies
+
+    - name: Install Jenkins for RedHat
+      yum: name=jenkins state=latest
+      register: jenkins_install
+
+    - name: Ensure jenkins is running
+      service:
+        name: jenkins
+        state: started
+
+    - name: Start jenkins on boot
+      shell: chkconfig jenkins on
+
+    - include: config.yml
+
+    - include: cli.yml
+
+    - include: plugins.yml
+
+    #
+    # Installation taskjuggler
+    #
+    - name: install gem taskjuggler
+      gem: name=taskjuggler state=latest
+    
+    # 
+    # Installation gitlab
+    #
+    - name: Check if GitLab configuration file already exists.
+      stat: path=/etc/gitlab/gitlab.rb
+      register: gitlab_config_file
+
+    - name: Check if GitLab is already installed.
+      stat: path=/usr/bin/gitlab-ctl
+      register: gitlab_file
+
+    # Install GitLab and its dependencies (RedHat).
+    - name: Install GitLab dependencies (RedHat).
+      yum: "name={{ item }} state=installed"
+      with_items:
+        - openssh-server
+        - postfix
+        - curl
+
+    - name: Download GitLab repository installation script (RedHat).
+      get_url:
+        url: "{{ gitlab_repository_installation_script_url }}"
+        dest: /tmp/gitlab_install_repository.sh
+      when: (gitlab_file.stat.exists == false)
+
+    - name: Install GitLab repository (RedHat)
+      command: bash /tmp/gitlab_install_repository.sh
+      when: (gitlab_file.stat.exists == false)
+
+    - name: Install GitLab (RedHat)
+      yum: "name=gitlab-ce state=installed"
+      when: (gitlab_file.stat.exists == false)
+
+    # Start and configure GitLab. Sometimes the first run fails, but after that,
+    # restarts fix problems, so ignore failures on this run.
+    - name: Reconfigure GitLab (first run).
+      command: >
+        gitlab-ctl reconfigure
+        creates=/var/opt/gitlab/bootstrapped
+      failed_when: false
+
+    - name: Create GitLab SSL configuration folder.
+      file:
+        path: /etc/gitlab/ssl
+        state: directory
+        owner: root
+        group: root
+        mode: 0700
+      when: gitlab_create_self_signed_cert
+
+    - name: Create self-signed certificate.
+      command: >
+        openssl req -new -nodes -x509 -subj "{{ gitlab_self_signed_cert_subj }}" -days 3650 -keyout {{ gitlab_ssl_certificate_key }} -out {{ gitlab_ssl_certificate }} -extensions v3_ca
+        creates={{ gitlab_ssl_certificate }}
+      when: gitlab_create_self_signed_cert
+
+    - name: Copy GitLab configuration file.
+      template:
+        src: gitlab.rb.j2
+        dest: /etc/gitlab/gitlab.rb
+        owner: root
+        group: root
+        mode: 0600
+      notify: restart gitlab
+
+  handlers:
+
+    # Safe-restart Jenkins
+    - name: Restart Jenkins
+      sudo: yes
+      command: java -jar {{ jenkins.cli_dest }} -s http://localhost:{{ jenkins_port }} safe-restart
+  

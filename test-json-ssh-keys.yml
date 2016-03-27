@@ -1,0 +1,29 @@
+---
+
+# Provision virtual machine example
+#
+
+- hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    jsondata: "{{ lookup('file', 'example-api-user-keys.log') }}"
+    bo_user_ssh_key_name: automationathome
+
+  tasks:
+
+    - name: output data
+      debug: msg="Rohdaten sind {{ jsondata }}"
+
+    - set_fact: 
+        json_output: "{{ jsondata | from_json }}"
+
+    - name: Setzen des Key-Namens
+      set_fact:
+        bo_ssh_key_id: "{{ item.id }}"
+      with_items: "{{ json_output }}"
+      when: item.username == "{{ bo_user_ssh_key_name }}"
+    
+    - name: Ausgabe SSH Key-ID
+      debug: msg="ID ist {{ bo_ssh_key_id }}"
