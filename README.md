@@ -23,4 +23,6 @@ default                    : ok=12   changed=8    unreachable=0    failed=1
 ```
 
 Aufruf mit Browser: 502 too much time - ingesamt tut sich aber was ...
+2. Aufruf des Playbooks - alles grün.
+Versuch: VM neu starten
 
